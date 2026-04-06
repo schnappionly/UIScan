@@ -4,6 +4,7 @@ import re
 from typing import List
 
 from ui_scanner.models import UIElement, ElementType
+from ui_scanner.utils.comment_utils import extract_comment
 
 # Animation patterns
 ANIMATION_PATTERNS = [
@@ -38,16 +39,16 @@ PROG_VIEW_PATTERN = re.compile(
 PROG_VIEW_VAR = re.compile(r'(Button|ImageButton|TextView|ImageView|EditText)\s+(\w+)\s*=')
 
 
-def scan_code(lines: List[str]) -> List[UIElement]:
+def scan_code(lines: List[str], file_ext: str = '.java') -> List[UIElement]:
     """Scan Java code for animations, click listeners, and programmatic views."""
     elements = []
-    elements.extend(_find_animations(lines))
-    elements.extend(_find_click_listeners(lines))
-    elements.extend(_find_programmatic_views(lines))
+    elements.extend(_find_animations(lines, file_ext))
+    elements.extend(_find_click_listeners(lines, file_ext))
+    elements.extend(_find_programmatic_views(lines, file_ext))
     return elements
 
 
-def _find_animations(lines: List[str]) -> List[UIElement]:
+def _find_animations(lines: List[str], file_ext: str = '.java') -> List[UIElement]:
     """Find animation usage in code."""
     elements = []
     for i, line in enumerate(lines):
@@ -58,13 +59,14 @@ def _find_animations(lines: List[str]) -> List[UIElement]:
                     element_type=anim_type,
                     category=ElementType.ANIMATION,
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, file_ext),
                     properties={'source': line.strip()[:200]},
                 ))
                 break  # One match per line is enough
     return elements
 
 
-def _find_click_listeners(lines: List[str]) -> List[UIElement]:
+def _find_click_listeners(lines: List[str], file_ext: str = '.java') -> List[UIElement]:
     """Find click/event listener registrations."""
     elements = []
     for i, line in enumerate(lines):
@@ -79,13 +81,14 @@ def _find_click_listeners(lines: List[str]) -> List[UIElement]:
                     element_type=listener_type,
                     category=ElementType.CLICKABLE,
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, file_ext),
                     properties={'listener': listener_type, 'view': view_name},
                 ))
                 break
     return elements
 
 
-def _find_programmatic_views(lines: List[str]) -> List[UIElement]:
+def _find_programmatic_views(lines: List[str], file_ext: str = '.java') -> List[UIElement]:
     """Find views created programmatically."""
     elements = []
     for i, line in enumerate(lines):
@@ -97,6 +100,7 @@ def _find_programmatic_views(lines: List[str]) -> List[UIElement]:
                 element_type=view_type,
                 category=_classify_prog_view(view_type),
                 line_number=i + 1,
+                comment=extract_comment(lines, i + 1, file_ext),
                 properties={'creation': 'programmatic'},
             ))
             continue
@@ -111,6 +115,7 @@ def _find_programmatic_views(lines: List[str]) -> List[UIElement]:
                 category=_classify_prog_view(view_type),
                 element_id=var_name,
                 line_number=i + 1,
+                comment=extract_comment(lines, i + 1, file_ext),
                 properties={'creation': 'programmatic'},
             ))
     return elements

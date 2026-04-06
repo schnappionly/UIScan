@@ -13,10 +13,12 @@ class ScanRunner:
         self,
         android_path: Optional[str] = None,
         ios_path: Optional[str] = None,
+        harmony_path: Optional[str] = None,
         verbose: bool = False,
     ):
         self.android_path = android_path
         self.ios_path = ios_path
+        self.harmony_path = harmony_path
         self.verbose = verbose
 
     def run(self) -> ScanResult:
@@ -47,6 +49,18 @@ class ScanRunner:
             except Exception as e:
                 result.errors.append(f"iOS scan error: {e}")
                 self._log(f"  iOS error: {e}")
+
+        if self.harmony_path:
+            self._log("Scanning Harmony project...")
+            try:
+                from ui_scanner.harmony.harmony_scanner import scan_harmony
+                modules = scan_harmony(self.harmony_path, verbose=self.verbose)
+                for m in modules:
+                    result.add_module(m)
+                self._log(f"  Harmony: {len(modules)} modules found")
+            except Exception as e:
+                result.errors.append(f"Harmony scan error: {e}")
+                self._log(f"  Harmony error: {e}")
 
         result.scan_time = time.time() - start
         self._log(f"Scan complete in {result.scan_time:.2f}s")

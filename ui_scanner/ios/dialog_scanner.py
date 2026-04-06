@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from ui_scanner.models import DialogInfo
 from ui_scanner.android.dialog_scanner import infer_scenario
+from ui_scanner.utils.comment_utils import extract_comment
 
 # iOS dialog patterns
 IOS_DIALOG_PATTERNS = [
@@ -47,6 +48,7 @@ def scan_dialogs(lines: List[str], is_swift: bool = True) -> List[DialogInfo]:
                     scenario=scenario,
                     message_hint=context[:200],
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, '.swift' if is_swift else '.m'),
                     properties={'style': style, 'context': context[:500]},
                 ))
                 break

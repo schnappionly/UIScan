@@ -9,20 +9,22 @@ from ui_scanner.report.html_builder import HTMLBuilder
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='UI Scanner - Scan Android/iOS projects for UI elements',
+        description='UI Scanner - Scan Android/iOS/Harmony projects for UI elements',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  python scanner.py --android /path/to/android-project --output report.html
-  python scanner.py --ios /path/to/ios-project --output report.html
-  python scanner.py --android /path/to/android --ios /path/to/ios --output report.html
-  python scanner.py --android /path/to/android --verbose
+  python3 -m ui_scanner.cli --android /path/to/android-project -o report.html
+  python3 -m ui_scanner.cli --ios /path/to/ios-project -o report.html
+  python3 -m ui_scanner.cli --harmony /path/to/harmony-project -o report.html
+  python3 -m ui_scanner.cli --android /path/to/android --harmony /path/to/harmony -o report.html
 """,
     )
     parser.add_argument('--android', metavar='PATH',
                         help='Path to Android project root')
     parser.add_argument('--ios', metavar='PATH',
                         help='Path to iOS project root')
+    parser.add_argument('--harmony', metavar='PATH',
+                        help='Path to Harmony (ArkTS) project root')
     parser.add_argument('--output', '-o', metavar='FILE', default='ui_report.html',
                         help='Output HTML file path (default: ui_report.html)')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -33,13 +35,14 @@ Examples:
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    if not args.android and not args.ios:
-        print("Error: Must specify at least one of --android or --ios", file=sys.stderr)
+    if not args.android and not args.ios and not args.harmony:
+        print("Error: Must specify at least one of --android, --ios, or --harmony", file=sys.stderr)
         return 1
 
     runner = ScanRunner(
         android_path=args.android,
         ios_path=args.ios,
+        harmony_path=args.harmony,
         verbose=args.verbose,
     )
 

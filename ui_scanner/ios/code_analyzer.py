@@ -4,6 +4,7 @@ import re
 from typing import List
 
 from ui_scanner.models import UIElement, ElementType
+from ui_scanner.utils.comment_utils import extract_comment
 
 # Swift programmatic view patterns
 SWIFT_VIEW_PATTERNS = [
@@ -61,14 +62,15 @@ ADD_SUBVIEW_RE = re.compile(r'(?:addSubview|\.addSubview)\s*\(\s*(\w+)')
 
 def scan_code(lines: List[str], is_swift: bool = True) -> List[UIElement]:
     """Scan source code for programmatic UI, gestures, and animations."""
+    file_ext = '.swift' if is_swift else '.m'
     elements = []
-    elements.extend(_find_programmatic_views(lines, is_swift))
-    elements.extend(_find_gestures(lines))
-    elements.extend(_find_animations(lines))
+    elements.extend(_find_programmatic_views(lines, is_swift, file_ext))
+    elements.extend(_find_gestures(lines, file_ext))
+    elements.extend(_find_animations(lines, file_ext))
     return elements
 
 
-def _find_programmatic_views(lines: List[str], is_swift: bool) -> List[UIElement]:
+def _find_programmatic_views(lines: List[str], is_swift: bool, file_ext: str) -> List[UIElement]:
     """Find programmatic view creation."""
     elements = []
     patterns = SWIFT_VIEW_PATTERNS if is_swift else OBJC_VIEW_PATTERNS
@@ -84,13 +86,14 @@ def _find_programmatic_views(lines: List[str], is_swift: bool) -> List[UIElement
                     category=_classify_ios_view(view_type),
                     element_id=var_name,
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, file_ext),
                     properties={'creation': 'programmatic'},
                 ))
                 break
     return elements
 
 
-def _find_gestures(lines: List[str]) -> List[UIElement]:
+def _find_gestures(lines: List[str], file_ext: str = '.swift') -> List[UIElement]:
     """Find gesture recognizer usage."""
     elements = []
     for i, line in enumerate(lines):
@@ -102,13 +105,14 @@ def _find_gestures(lines: List[str]) -> List[UIElement]:
                     element_type=gesture_name,
                     category=ElementType.CLICKABLE,
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, file_ext),
                     properties={'type': 'gesture'},
                 ))
                 break
     return elements
 
 
-def _find_animations(lines: List[str]) -> List[UIElement]:
+def _find_animations(lines: List[str], file_ext: str = '.swift') -> List[UIElement]:
     """Find animation usage."""
     elements = []
     for i, line in enumerate(lines):
@@ -119,6 +123,7 @@ def _find_animations(lines: List[str]) -> List[UIElement]:
                     element_type=anim_type,
                     category=ElementType.ANIMATION,
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, file_ext),
                     properties={'source': line.strip()[:200]},
                 ))
                 break

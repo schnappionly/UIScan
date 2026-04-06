@@ -1,6 +1,6 @@
 # UIScan - 移动应用 UI 元素静态扫描工具
 
-UIScan 是一个面向 Android 和 iOS 移动应用（harmony待补充）的 **静态代码分析工具**，能够自动扫描源码和布局文件，发现、分类并报告所有 UI 元素，最终生成一份可交互的 HTML 扫描报告。
+UIScan 是一个面向 Android、iOS 和 HarmonyOS（ArkTS/ArkUI）移动应用的 **静态代码分析工具**，能够自动扫描源码和布局文件，发现、分类并报告所有 UI 元素，最终生成一份可交互的 HTML 扫描报告。
 
 ## 功能特性
 
@@ -21,6 +21,13 @@ UIScan 是一个面向 Android 和 iOS 移动应用（harmony待补充）的 **�
 - **弹窗检测**：识别 UIAlertController、UIAlertView、Action Sheet、Popover
 - **智能合并**：自动合并代码文件与 Storyboard 中的 ViewController 数据
 
+### Harmony (ArkTS/ArkUI) 扫描
+
+- **页面发现**：自动识别 `@Entry` 页面和 `@Component` 自定义组件
+- **代码分析**：扫描 `.ets` 源码，检测声明式 UI 组件（Button、Text、List、Column 等）、动画（animateTo、Animator 等）、手势（TapGesture、PanGesture 等）
+- **弹窗检测**：识别 AlertDialog、ActionSheet、Toast、CustomDialog、promptAction 等，复用场景推断引擎
+- **按目录分组**：按源码目录结构自动归类模块
+
 ### UI 元素分类
 
 所有发现的元素会被自动归类为以下五大类别：
@@ -29,20 +36,23 @@ UIScan 是一个面向 Android 和 iOS 移动应用（harmony待补充）的 **�
 |------|------|----------|
 | 可点击 | 可交互的控件 | Button、Switch、OnClickListener、手势识别 |
 | 展示数据 | 展示信息的控件 | TextView、ImageView、RecyclerView、ProgressBar |
-| 动画 | 动画相关元素 | ObjectAnimator、Lottie、UIView.animate |
-| 容器布局 | 布局容器 | ConstraintLayout、LinearLayout、StackView |
-| 输入 | 用户输入控件 | EditText、UITextField、SearchView |
+| 动画 | 动画相关元素 | ObjectAnimator、Lottie、UIView.animate、animateTo |
+| 容器布局 | 布局容器 | ConstraintLayout、LinearLayout、StackView、Column、Row |
+| 输入 | 用户输入控件 | EditText、UITextField、TextInput、Search |
 
 ### HTML 报告
 
 生成一份自包含的交互式 HTML 报告，支持：
 
 - 树形结构展示：平台 → 模块 → 页面 → 元素类别 → 具体元素
-- 关键词搜索过滤
-- 平台筛选（Android / iOS）
-- 类别筛选
+- **搜索高亮**：搜索框支持搜索元素名称、类型、ID、注释等，匹配文本高亮显示
+- **自动定位**：搜索时自动展开父节点并滚动到第一个匹配项，显示匹配数量
+- 平台筛选（Android / iOS / Harmony）
+- 类别筛选（可点击 / 展示数据 / 动画 / 容器布局 / 输入）
 - 一键展开 / 折叠所有节点
-- 页面类型标签（Activity / Fragment / ViewController / View）
+- 页面类型标签（Activity / Fragment / ViewController / Page / Component）
+- **行号展示**：每个元素显示源码行号
+- **注释提取**：自动提取元素和页面附近的源码注释并展示
 - 扫描统计信息（页面数、元素数、弹窗数、扫描耗时）
 
 ## 项目结构
@@ -55,7 +65,8 @@ UIScan/
 │   ├── models.py                        # 数据模型定义
 │   ├── cli.py                           # 命令行参数解析
 │   ├── utils/
-│   │   └── file_utils.py               # 文件遍历、并行处理工具
+│   │   ├── file_utils.py               # 文件遍历、并行处理工具
+│   │   └── comment_utils.py            # 注释提取工具
 │   ├── android/
 │   │   ├── android_scanner.py           # Android 扫描协调器
 │   │   ├── page_finder.py               # Activity/Fragment 发现
@@ -68,13 +79,18 @@ UIScan/
 │   │   ├── storyboard_parser.py         # Storyboard/XIB 解析
 │   │   ├── code_analyzer.py             # Swift/ObjC 代码分析
 │   │   └── dialog_scanner.py            # 弹窗检测
+│   ├── harmony/
+│   │   ├── harmony_scanner.py           # Harmony 扫描协调器
+│   │   ├── page_finder.py               # @Entry/@Component 发现
+│   │   ├── code_analyzer.py             # ArkTS 声明式 UI 解析
+│   │   └── dialog_scanner.py            # 弹窗检测
 │   └── report/
 │       └── html_builder.py              # HTML 报告生成器
 ```
 
 ## 环境要求
 
-- **Python 3.10+**（使用了 `match` 语法、`dataclass`、类型注解等特性）
+- **Python 3.10+**（使用了 `dataclass`、类型注解等特性）
 - **无第三方依赖** — 仅使用 Python 标准库
 
 ## 快速开始
@@ -97,11 +113,14 @@ python3 -m ui_scanner.cli --android /path/to/android-project -o report.html
 # 扫描 iOS 项目
 python3 -m ui_scanner.cli --ios /path/to/ios-project -o report.html
 
-# 同时扫描 Android 和 iOS 项目
-python3 -m ui_scanner.cli --android /path/to/android --ios /path/to/ios -o report.html
+# 扫描 Harmony 项目
+python3 -m ui_scanner.cli --harmony /path/to/harmony-project -o report.html
+
+# 同时扫描多个平台
+python3 -m ui_scanner.cli --android /path/to/android --ios /path/to/ios --harmony /path/to/harmony -o report.html
 
 # 开启详细日志输出
-python3 -m ui_scanner.cli --android /path/to/android-project -v
+python3 -m ui_scanner.cli --harmony /path/to/harmony-project -v
 ```
 
 ### 命令行参数
@@ -110,10 +129,11 @@ python3 -m ui_scanner.cli --android /path/to/android-project -v
 |------|------|------|--------|
 | `--android PATH` | — | Android 项目根目录路径 | — |
 | `--ios PATH` | — | iOS 项目根目录路径 | — |
+| `--harmony PATH` | — | Harmony (ArkTS) 项目根目录路径 | — |
 | `--output FILE` | `-o` | 输出 HTML 报告文件路径 | `ui_report.html` |
 | `--verbose` | `-v` | 打印详细扫描进度 | `false` |
 
-> 至少需要指定 `--android` 或 `--ios` 中的一个参数。
+> 至少需要指定 `--android`、`--ios` 或 `--harmony` 中的一个参数。
 
 ## 工作原理
 
@@ -133,6 +153,10 @@ python3 -m ui_scanner.cli --android /path/to/android-project -v
         │     ├─ StoryboardParser: 解析 Storyboard/XIB XML
         │     ├─ CodeAnalyzer: 正则匹配编程式 UI、手势、动画
         │     └─ DialogScanner: 正则匹配弹窗类型
+        ├─→ Harmony 扫描 (harmony/harmony_scanner.py)
+        │     ├─ PageFinder: 正则匹配 @Entry/@Component 结构体
+        │     ├─ CodeAnalyzer: 解析声明式 UI 组件、动画、手势
+        │     └─ DialogScanner: 正则匹配弹窗 + 场景推断
         └─→ HTMLBuilder (report/html_builder.py)
               └─ 生成自包含交互式 HTML 报告
 ```
@@ -146,14 +170,23 @@ python3 -m ui_scanner.cli --android /path/to/android-project -v
 - 登录提示
 - 权限请求
 - 加载中
-- 输入 / 表单
-- 确认操作
+- 操作确认
+- 成功提示
 - 退出确认
-- 其他
+- 更新提示
+- 保存确认
+- 支付相关
+- 分享 / 评价
+- 注册 / 数据同步
+- 通用弹框
 
-### 并行处理
+### 注释提取
 
-文件扫描阶段使用 `ProcessPoolExecutor` 进行并行处理，充分利用多核 CPU 加速大型项目扫描。
+扫描时会自动提取每个元素和页面声明前后 2 行内的源码注释：
+
+- Java/Kotlin/Swift/ArkTS：识别 `//` 和 `/* */` 注释
+- XML/Storyboard/XIB：识别 `<!-- -->` 注释
+- 注释显示在元素后方，方便理解组件用途
 
 ## 数据模型
 
@@ -162,17 +195,21 @@ python3 -m ui_scanner.cli --android /path/to/android-project -v
 ```
 ScanResult                     # 完整扫描结果
  └─ ModuleInfo[]               # 模块/包分组
-     └─ Page[]                 # 页面 (Activity/Fragment/ViewController)
+     └─ Page[]                 # 页面 (Activity/Fragment/ViewController/Page/Component)
          ├─ UIElement[]        # UI 元素
          │    ├─ name          # 元素名称
          │    ├─ element_type  # 元素类型
          │    ├─ category      # 分类 (可点击/展示数据/动画/容器布局/输入)
          │    ├─ element_id    # 资源 ID
+         │    ├─ line_number   # 源码行号
+         │    ├─ comment       # 源码注释
          │    └─ properties    # 附加属性
          └─ DialogInfo[]       # 弹窗信息
               ├─ name          # 弹窗名称
               ├─ dialog_type   # 弹窗类型
               ├─ scenario      # 推断的场景
+              ├─ line_number   # 源码行号
+              ├─ comment       # 源码注释
               └─ message_hint  # 消息提示内容
 ```
 

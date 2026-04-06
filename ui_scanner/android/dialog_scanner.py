@@ -4,6 +4,7 @@ import re
 from typing import Dict, List, Optional
 
 from ui_scanner.models import DialogInfo
+from ui_scanner.utils.comment_utils import extract_comment
 
 # Dialog detection patterns
 DIALOG_PATTERNS = [
@@ -68,6 +69,7 @@ def scan_dialogs(
                     scenario=scenario,
                     message_hint=context[:200],
                     line_number=i + 1,
+                    comment=extract_comment(lines, i + 1, '.java'),
                     properties={'context': context[:500]},
                 ))
                 break  # One dialog per line

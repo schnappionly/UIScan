@@ -18,6 +18,7 @@ class ElementType(str, Enum):
 class Platform(str, Enum):
     ANDROID = "Android"
     IOS = "iOS"
+    HARMONY = "Harmony"
 
 
 class PageType(str, Enum):
@@ -25,6 +26,8 @@ class PageType(str, Enum):
     FRAGMENT = "Fragment"
     VIEW_CONTROLLER = "ViewController"
     VIEW = "View"
+    PAGE = "Page"
+    COMPONENT = "Component"
 
 
 @dataclass
@@ -38,6 +41,7 @@ class UIElement:
     properties: Dict[str, str] = field(default_factory=dict)
     source_file: str = ""
     line_number: int = 0
+    comment: str = ""
 
     @property
     def category_label(self) -> str:
@@ -53,6 +57,7 @@ class DialogInfo:
     message_hint: str = ""
     source_file: str = ""
     line_number: int = 0
+    comment: str = ""
     properties: Dict[str, str] = field(default_factory=dict)
 
 
@@ -66,6 +71,7 @@ class Page:
     layout_file: str = ""
     package_name: str = ""
     parent_class: str = ""
+    comment: str = ""
     elements: List[UIElement] = field(default_factory=list)
     dialogs: List[DialogInfo] = field(default_factory=list)
 
@@ -128,3 +134,7 @@ class ScanResult:
     @property
     def ios_modules(self) -> List[ModuleInfo]:
         return [m for m in self.modules if m.platform == Platform.IOS]
+
+    @property
+    def harmony_modules(self) -> List[ModuleInfo]:
+        return [m for m in self.modules if m.platform == Platform.HARMONY]
