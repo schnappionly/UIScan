@@ -49,7 +49,6 @@ UIScan 是一个面向 Android 和 iOS 移动应用（harmony待补充）的 **�
 
 ```
 UIScan/
-├── main.py                              # 入口脚本
 ├── ui_scanner/
 │   ├── __init__.py                      # 包初始化，版本号
 │   ├── scanner.py                       # ScanRunner 扫描编排器
@@ -93,16 +92,16 @@ cd UIScan/UIScan
 
 ```bash
 # 扫描 Android 项目
-python main.py --android /path/to/android-project -o report.html
+python3 -m ui_scanner.cli --android /path/to/android-project -o report.html
 
 # 扫描 iOS 项目
-python main.py --ios /path/to/ios-project -o report.html
+python3 -m ui_scanner.cli --ios /path/to/ios-project -o report.html
 
 # 同时扫描 Android 和 iOS 项目
-python main.py --android /path/to/android --ios /path/to/ios -o report.html
+python3 -m ui_scanner.cli --android /path/to/android --ios /path/to/ios -o report.html
 
 # 开启详细日志输出
-python main.py --android /path/to/android-project --verbose
+python3 -m ui_scanner.cli --android /path/to/android-project -v
 ```
 
 ### 命令行参数
@@ -121,7 +120,7 @@ python main.py --android /path/to/android-project --verbose
 ### 整体流程
 
 ```
-命令行参数解析 (cli.py)
+命令行参数解析 (cli.py, 运行方式: python3 -m ui_scanner.cli)
   └─→ ScanRunner (scanner.py)
         ├─→ Android 扫描 (android/android_scanner.py)
         │     ├─ 定位 Gradle 模块目录
