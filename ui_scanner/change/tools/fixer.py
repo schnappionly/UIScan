@@ -69,8 +69,9 @@ class IDFixer:
             if old_camel != new_camel:
                 self.camel_mappings[old_camel] = new_camel
 
-        # 预编译：一次性构建 Kotlin/Java 替换所需的全部正则和查找表
+        # 预编译：一次性构建全部正则和查找表
         self._compile_kt_java_patterns()
+        self._compile_xml_patterns()
 
         # 统计（含幂等计数）
         self.stats = {
@@ -84,6 +85,25 @@ class IDFixer:
 
         # 修改日志
         self.changes = []
+
+    def _compile_xml_patterns(self):
+        """预编译 XML 文件替换所需的全部正则，与 Java 同理。"""
+        if not self.id_mappings:
+            self._xml_old_ids_set = set()
+            self._xml_declare_re = None
+            self._xml_ref_re = None
+            self._xml_map = {}
+            return
+
+        self._xml_old_ids_set = set(self.id_mappings.keys())
+        self._xml_map = dict(self.id_mappings)
+
+        sorted_ids = sorted(self._xml_old_ids_set, key=len, reverse=True)
+        alts = '|'.join(re.escape(oid) for oid in sorted_ids)
+
+        # @+id/old 和 @id/old 各一个预编译正则
+        self._xml_declare_re = re.compile(rf'@\+id/({alts})(?![a-zA-Z0-9_])')
+        self._xml_ref_re = re.compile(rf'@id/({alts})(?![a-zA-Z0-9_])')
 
     def _compile_kt_java_patterns(self):
         """预编译 Java 文件替换所需的全部正则，避免逐文件重复编译。
@@ -170,7 +190,10 @@ class IDFixer:
     # ================================================================
 
     def fix_xml_file(self, filepath: str) -> int:
-        """修复 XML 文件中的 ID 引用。返回替换次数。"""
+        """修复 XML 文件中的 ID 引用。返回替换次数。
+
+        预编译正则 + 回调查表 + 幂等早退，与 Java 优化同思路。
+        """
         try:
             content = read_file(filepath)
         except Exception as e:
@@ -178,30 +201,59 @@ class IDFixer:
             self.stats["errors"] += 1
             return 0
 
+        if not self._xml_declare_re:
+            return 0
+
+        # ── 早退：不含任何 old_id 子串 ──
+        _has_old = False
+        for old_id in self._xml_old_ids_set:
+            if old_id in content:
+                _has_old = True
+                break
+        if not _has_old:
+            return 0
+
+        # ── 幂等检测：有子串命中但正则不匹配 → 已替换完毕 ──
+        _has_declare = self._xml_declare_re.search(content) is not None
+        _has_ref = self._xml_ref_re.search(content) is not None
+        if not _has_declare and not _has_ref:
+            self.stats["files_skipped"] += 1
+            self.stats["already_replaced"] += 1
+            return 0
+
         original = content
         count = 0
+        _local_log = self.changes.append
+        _rid_map = self._xml_map
+        _project = self.project_dir
 
-        # 1. 替换 android:id="@+id/xxx" 声明
-        for old_id, new_id in self.id_mappings.items():
-            # @+id/old -> @+id/new
-            pattern = r'@\+id/' + re.escape(old_id) + r'(?![a-zA-Z0-9_])'
-            replacement = f'@+id/{new_id}'
-            new_content = re.sub(pattern, replacement, content)
-            if new_content != content:
-                matches = len(re.findall(pattern, content))
-                count += matches
-                self.log_change(filepath, f"@+id/{old_id}", f"@+id/{new_id}", "XML id 声明")
-                content = new_content
+        if _has_declare:
+            def _replace_declare(m):
+                nonlocal count
+                old = m.group(1)
+                new = _rid_map[old]
+                count += 1
+                _local_log({
+                    "file": os.path.relpath(filepath, _project),
+                    "old": f"@+id/{old}", "new": f"@+id/{new}",
+                    "context": "XML id 声明",
+                })
+                return f'@+id/{new}'
+            content = self._xml_declare_re.sub(_replace_declare, content)
 
-            # 2. 替换 @id/xxx 引用（约束布局等）
-            pattern = f'@id/{re.escape(old_id)}(?![a-zA-Z0-9_])'
-            replacement = f'@id/{new_id}'
-            new_content = re.sub(pattern, replacement, content)
-            if new_content != content:
-                matches = len(re.findall(pattern, content))
-                count += matches
-                self.log_change(filepath, f"@id/{old_id}", f"@id/{new_id}", "XML id 引用")
-                content = new_content
+        if _has_ref:
+            def _replace_ref(m):
+                nonlocal count
+                old = m.group(1)
+                new = _rid_map[old]
+                count += 1
+                _local_log({
+                    "file": os.path.relpath(filepath, _project),
+                    "old": f"@id/{old}", "new": f"@id/{new}",
+                    "context": "XML id 引用",
+                })
+                return f'@id/{new}'
+            content = self._xml_ref_re.sub(_replace_ref, content)
 
         if content != original:
             if not self.dry_run:
@@ -459,17 +511,21 @@ class IDFixer:
             res_dir = os.path.join(src_main, "res")
             if not os.path.isdir(res_dir):
                 continue
-            layout_files = list(find_files(res_dir, extensions=[".xml"]))
-            layout_files = [
-                f for f in layout_files
-                if "/layout" in f or os.sep + "layout" in f
-            ]
-            for fp in layout_files:
-                self.stats["files_scanned"] += 1
-                count = self.fix_xml_file(fp)
-                if count > 0:
-                    rel = os.path.relpath(fp, self.project_dir)
-                    cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
+            # 直接遍历 layout*/ 开头的子目录，避免收集全部 XML 再过滤
+            try:
+                entries = os.listdir(res_dir)
+            except OSError:
+                continue
+            for entry in entries:
+                entry_path = os.path.join(res_dir, entry)
+                if not os.path.isdir(entry_path) or not entry.startswith("layout"):
+                    continue
+                for fp in find_files(entry_path, extensions=[".xml"]):
+                    self.stats["files_scanned"] += 1
+                    count = self.fix_xml_file(fp)
+                    if count > 0:
+                        rel = os.path.relpath(fp, self.project_dir)
+                        cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
     def _fix_java_files(self):
         """修复所有模块中的 Java 源文件。"""
