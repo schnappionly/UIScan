@@ -62,6 +62,9 @@ class IDFixer:
         self.backup = backup
         self.only_xml = only_xml
 
+        # 自动发现所有模块的 src/main 目录
+        self._source_roots = self._discover_source_roots()
+
         # 同时维护驼峰形式的映射（用于 ViewBinding）
         self.camel_mappings = {}
         for old_id, new_id in id_mappings.items():
@@ -307,6 +310,10 @@ class IDFixer:
         cprint(f"  ID 映射数: {len(self.id_mappings)}", Colors.BOLD)
         mode = "预览模式 (dry-run)" if self.dry_run else "执行模式"
         cprint(f"  模式: {mode}", Colors.YELLOW if self.dry_run else Colors.GREEN)
+        cprint(f"  发现模块数: {len(self._source_roots)}", Colors.BOLD)
+        for root in self._source_roots:
+            rel = os.path.relpath(root, self.project_dir)
+            cprint(f"    - {rel}", Colors.CYAN)
         cprint(f"{'='*70}\n", Colors.BLUE)
 
         if not self.id_mappings:
@@ -332,44 +339,74 @@ class IDFixer:
         self._print_summary()
         self._save_changelog()
 
-    def _fix_layout_files(self):
-        """修复所有布局 XML 文件。"""
-        cprint("\n  [1/5] 扫描布局 XML 文件...", Colors.BOLD)
-        layout_files = list(find_files(
-            os.path.join(self.project_dir, "app", "src", "main", "res"),
-            extensions=[".xml"],
-        ))
-        # 过滤出布局文件
-        layout_files = [
-            f for f in layout_files
-            if "/layout" in f or "\\layout" in f
-        ]
-        for fp in layout_files:
-            self.stats["files_scanned"] += 1
-            count = self.fix_xml_file(fp)
-            if count > 0:
-                rel = os.path.relpath(fp, self.project_dir)
-                cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
+    def _discover_source_roots(self) -> list[str]:
+        """自动发现项目中所有模块的 src/main 目录。
 
-    def _fix_kotlin_java_files(self):
-        """修复 Kotlin/Java 源文件。"""
-        cprint("\n  [2/5] 扫描 Kotlin/Java 源文件...", Colors.BOLD)
-        for src_dir in ["java", "kotlin"]:
-            base = os.path.join(self.project_dir, "app", "src", "main", src_dir)
-            if not os.path.exists(base):
+        支持多模块项目结构：
+          project/app/src/main/
+          project/module1/src/main/
+          project/feature/login/src/main/
+        同时也覆盖 src/main 直接在项目根目录下的情况。
+        """
+        roots = []
+        seen = set()
+        for dirpath, dirnames, filenames in os.walk(self.project_dir):
+            # 跳过 build、.gradle、.idea 等目录
+            dirnames[:] = [d for d in dirnames if d not in (
+                "build", ".gradle", ".idea", ".git", "gradle", "tools",
+            )]
+            if os.path.basename(dirpath) == "main" and "src" in dirpath:
+                # 确认父目录是 src
+                parent = os.path.dirname(dirpath)
+                if os.path.basename(parent) == "src":
+                    if dirpath not in seen:
+                        seen.add(dirpath)
+                        roots.append(dirpath)
+                        # 不再深入这个 main 目录内部找子 main
+                        dirnames.clear()
+        return roots
+
+    def _fix_layout_files(self):
+        """修复所有模块中的布局 XML 文件。"""
+        cprint("\n  [1/5] 扫描布局 XML 文件...", Colors.BOLD)
+        for src_main in self._source_roots:
+            res_dir = os.path.join(src_main, "res")
+            if not os.path.isdir(res_dir):
                 continue
-            for fp in find_files(base, extensions=[".kt", ".java", ".kts"]):
+            layout_files = list(find_files(res_dir, extensions=[".xml"]))
+            layout_files = [
+                f for f in layout_files
+                if "/layout" in f or os.sep + "layout" in f
+            ]
+            for fp in layout_files:
                 self.stats["files_scanned"] += 1
-                count = self.fix_kotlin_java_file(fp)
+                count = self.fix_xml_file(fp)
                 if count > 0:
                     rel = os.path.relpath(fp, self.project_dir)
                     cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
+    def _fix_kotlin_java_files(self):
+        """修复所有模块中的 Kotlin/Java 源文件。"""
+        cprint("\n  [2/5] 扫描 Kotlin/Java 源文件...", Colors.BOLD)
+        for src_main in self._source_roots:
+            for src_dir in ["java", "kotlin"]:
+                base = os.path.join(src_main, src_dir)
+                if not os.path.isdir(base):
+                    continue
+                for fp in find_files(base, extensions=[".kt", ".java", ".kts"]):
+                    self.stats["files_scanned"] += 1
+                    count = self.fix_kotlin_java_file(fp)
+                    if count > 0:
+                        rel = os.path.relpath(fp, self.project_dir)
+                        cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
+
     def _fix_navigation_files(self):
-        """修复 Navigation XML。"""
+        """修复所有模块中的 Navigation XML。"""
         cprint("\n  [3/5] 扫描 Navigation XML...", Colors.BOLD)
-        nav_dir = os.path.join(self.project_dir, "app", "src", "main", "res", "navigation")
-        if os.path.exists(nav_dir):
+        for src_main in self._source_roots:
+            nav_dir = os.path.join(src_main, "res", "navigation")
+            if not os.path.isdir(nav_dir):
+                continue
             for fp in find_files(nav_dir, extensions=[".xml"]):
                 self.stats["files_scanned"] += 1
                 count = self.fix_navigation_file(fp)
@@ -378,10 +415,12 @@ class IDFixer:
                     cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
     def _fix_menu_files(self):
-        """修复 Menu XML。"""
+        """修复所有模块中的 Menu XML。"""
         cprint("\n  [4/5] 扫描 Menu XML...", Colors.BOLD)
-        menu_dir = os.path.join(self.project_dir, "app", "src", "main", "res", "menu")
-        if os.path.exists(menu_dir):
+        for src_main in self._source_roots:
+            menu_dir = os.path.join(src_main, "res", "menu")
+            if not os.path.isdir(menu_dir):
+                continue
             for fp in find_files(menu_dir, extensions=[".xml"]):
                 self.stats["files_scanned"] += 1
                 count = self.fix_menu_file(fp)
@@ -390,13 +429,14 @@ class IDFixer:
                     cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
     def _fix_values_files(self):
-        """修复 values/ids.xml 等文件。"""
+        """修复所有模块中的 values/ids.xml 等文件。"""
         cprint("\n  [5/5] 扫描 values XML...", Colors.BOLD)
-        values_dir = os.path.join(self.project_dir, "app", "src", "main", "res", "values")
-        if os.path.exists(values_dir):
+        for src_main in self._source_roots:
+            values_dir = os.path.join(src_main, "res", "values")
+            if not os.path.isdir(values_dir):
+                continue
             for fp in find_files(values_dir, extensions=[".xml"]):
                 self.stats["files_scanned"] += 1
-                # ids.xml 中可能有 <item type="id" name="xxx"/>
                 try:
                     content = read_file(fp)
                     original = content
