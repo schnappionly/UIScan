@@ -456,6 +456,41 @@ class IDFixer:
         cprint(f"  修改日志已保存: {log_path}", Colors.GREEN)
 
 
+def _resolve_duplicates(id_mappings: dict[str, str]) -> dict[str, str]:
+    """检测 suggested_id 重复，自动追加数字后缀消歧。
+
+    例：两个 old_id 都映射到 login_btn_submit，
+    则第二个自动变为 login_btn_submit_2，第三个 login_btn_submit_3。
+    """
+    from collections import Counter
+
+    new_id_counts = Counter(id_mappings.values())
+    duplicates = {nid for nid, cnt in new_id_counts.items() if cnt > 1}
+
+    if not duplicates:
+        return id_mappings
+
+    resolved = {}
+    # 记录每个重复 new_id 当前已分配的序号
+    seq_map = {}
+
+    for old_id, new_id in id_mappings.items():
+        if new_id in duplicates:
+            seq_map.setdefault(new_id, 0)
+            seq_map[new_id] += 1
+            if seq_map[new_id] == 1:
+                # 第一个保持不变
+                resolved[old_id] = new_id
+            else:
+                resolved_id = f"{new_id}_{seq_map[new_id]}"
+                print_warning(f"重复 ID '{new_id}' → 自动重命名为 '{resolved_id}' (原 ID: {old_id})")
+                resolved[old_id] = resolved_id
+        else:
+            resolved[old_id] = new_id
+
+    return resolved
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Android 组件 ID 规范化自动修复工具",
@@ -511,18 +546,22 @@ def main():
     if args.report and os.path.exists(args.report):
         try:
             with open(args.report, "r", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    # 兼容各种 Excel 保存格式：False/FALSE/false/0 等
-                    is_compliant = str(row.get("is_compliant", "")).strip().lower()
-                    if is_compliant in ("false", "0", "no", ""):
-                        old_id = row.get("original_id", "").strip()
-                        new_id = row.get("suggested_id", "").strip()
-                        # 去掉 Excel 可能加的引号
-                        if new_id.startswith('"') and new_id.endswith('"'):
-                            new_id = new_id[1:-1]
-                        if old_id and new_id and old_id != new_id:
-                            id_mappings[old_id] = new_id
+                raw_lines = f.readlines()
+            # 跳过 Excel sep= 声明行，避免 DictReader 误解析
+            clean_lines = [line for line in raw_lines if not line.strip().startswith("sep=")]
+            import io
+            reader = csv.DictReader(io.StringIO("".join(clean_lines)))
+            for row in reader:
+                # 兼容各种 Excel 保存格式：False/FALSE/false/0 等
+                is_compliant = str(row.get("is_compliant", "")).strip().lower()
+                if is_compliant in ("false", "0", "no", ""):
+                    old_id = row.get("original_id", "").strip()
+                    new_id = row.get("suggested_id", "").strip()
+                    # 去掉 Excel 可能加的引号
+                    if new_id.startswith('"') and new_id.endswith('"'):
+                        new_id = new_id[1:-1]
+                    if old_id and new_id and old_id != new_id:
+                        id_mappings[old_id] = new_id
         except Exception as e:
             print_error(f"报告加载失败: {e}")
             sys.exit(1)
@@ -542,15 +581,9 @@ def main():
         print_warning("没有需要修复的 ID")
         sys.exit(0)
 
-    # 冲突检测：检查新 ID 是否与现有 ID 冲突
+    # 冲突检测：检查新 ID 是否重复，自动加数字后缀消歧
     print_info("检查 ID 冲突...")
-    # 这里简单检查映射表内部的冲突
-    new_ids = list(id_mappings.values())
-    duplicates = [nid for nid in new_ids if new_ids.count(nid) > 1]
-    if duplicates:
-        print_error(f"检测到重复的新 ID: {set(duplicates)}")
-        print_error("请检查报告，确保每个旧 ID 映射到唯一的新 ID")
-        sys.exit(1)
+    id_mappings = _resolve_duplicates(id_mappings)
 
     # 执行修复
     dry_run = not args.execute

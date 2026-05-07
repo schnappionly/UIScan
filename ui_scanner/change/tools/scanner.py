@@ -249,6 +249,8 @@ def save_report(results: list[dict], output_path: str) -> None:
     ]
 
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+        # sep= 首行让 Excel 始终正确识别逗号分隔符，避免二次打开列合并
+        f.write("sep=,\n")
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
