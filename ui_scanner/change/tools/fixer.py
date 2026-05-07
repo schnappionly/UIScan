@@ -510,13 +510,18 @@ def main():
     # 从报告加载
     if args.report and os.path.exists(args.report):
         try:
-            with open(args.report, "r", encoding="utf-8") as f:
+            with open(args.report, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    if row.get("is_compliant") == "False":
-                        old_id = row["original_id"]
-                        new_id = row["suggested_id"]
-                        if old_id != new_id:
+                    # 兼容各种 Excel 保存格式：False/FALSE/false/0 等
+                    is_compliant = str(row.get("is_compliant", "")).strip().lower()
+                    if is_compliant in ("false", "0", "no", ""):
+                        old_id = row.get("original_id", "").strip()
+                        new_id = row.get("suggested_id", "").strip()
+                        # 去掉 Excel 可能加的引号
+                        if new_id.startswith('"') and new_id.endswith('"'):
+                            new_id = new_id[1:-1]
+                        if old_id and new_id and old_id != new_id:
                             id_mappings[old_id] = new_id
         except Exception as e:
             print_error(f"报告加载失败: {e}")

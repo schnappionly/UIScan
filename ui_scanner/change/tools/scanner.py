@@ -248,7 +248,7 @@ def save_report(results: list[dict], output_path: str) -> None:
         "suggested_camel",
     ]
 
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)

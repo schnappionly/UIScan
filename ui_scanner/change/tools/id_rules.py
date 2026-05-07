@@ -237,34 +237,57 @@ def generate_suggested_id(
     page_name: str,
     component_tag: Optional[str] = None,
 ) -> str:
-    """为不合规的 ID 生成建议的新 ID。"""
-    # 先转小写处理
-    id_lower = id_name.lower()
-    # 处理驼峰：loginBtn -> login_btn
-    id_snake = camel_to_snake(id_name)
+    """为不合规的 ID 生成建议的新 ID。
 
-    parts = id_snake.split("_")
+    核心逻辑：从原 ID 中提取功能语义，组装为 {page}_{abbr}_{desc}。
+    """
+    # 处理驼峰：loginBtn -> login_btn, textView1 -> text_view1
+    id_snake = camel_to_snake(id_name).lower()
+    # 去掉数字后缀（自动生成的 textView1 等）
+    id_clean = re.sub(r"\d+$", "", id_snake).rstrip("_")
+
+    parts = id_clean.split("_") if id_clean else []
     expected_abbr = get_component_abbr(component_tag) if component_tag else None
 
-    # 智能拆分原始 ID
-    matched_page, old_abbr, old_desc = _split_id_parts(id_snake, page_name)
-
-    # 提取功能描述：去掉页面名和所有已知缩写，剩余部分作为描述
+    # 去掉页面名各段、去掉所有已知缩写、去掉纯数字，收集剩余有意义的词
     page_part_set = set(page_name.split("_")) if page_name else set()
-    desc_parts = [p for p in parts if p not in page_part_set and p not in KNOWN_ABBRS]
+    meaningful = [p for p in parts if p and p not in page_part_set and p not in KNOWN_ABBRS and not p.isdigit()]
 
-    if not desc_parts:
-        # 如果完全提取不到描述，用原 ID 最后一部分
-        desc_parts = [parts[-1]] if parts else ["view"]
+    # 如果没提取到有意义的词，尝试从驼峰拆分的各段中宽松匹配：
+    # 只去掉已知缩写，不去掉页面名（此时页面名本身就是功能描述）
+    if not meaningful:
+        meaningful = [p for p in parts if p and p not in KNOWN_ABBRS and not p.isdigit() and len(p) > 1]
 
-    description = "_".join(desc_parts)
+    # 如果还没有，尝试从原始 ID 全词中再提取
+    if not meaningful:
+        raw_parts = id_name.lower().split("_")
+        meaningful = [p for p in raw_parts if p and p not in KNOWN_ABBRS and not p.isdigit() and len(p) > 1]
+
+    if meaningful:
+        description = "_".join(meaningful)
+    else:
+        # 最终兜底：基于组件标签推一个通用描述
+        if expected_abbr == "btn":
+            description = "submit"
+        elif expected_abbr == "tv":
+            description = "text"
+        elif expected_abbr == "et":
+            description = "input"
+        elif expected_abbr == "iv":
+            description = "image"
+        elif expected_abbr == "rv":
+            description = "list"
+        elif expected_abbr == "fab":
+            description = "add"
+        else:
+            description = "view"
+
     # 去掉非法字符
-    description = re.sub(r"[^a-z0-9_]", "", description.lower())
+    description = re.sub(r"[^a-z0-9_]", "", description)
     if not description:
         description = "view"
 
-    # 组装新 ID
-    abbr = expected_abbr or old_abbr or "view"
+    abbr = expected_abbr or "view"
     return f"{page_name}_{abbr}_{description}"
 
 
