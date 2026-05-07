@@ -1,0 +1,64 @@
+# Android 组件 ID 规范化工具 - 配置文件
+# ==========================================
+
+# 要扫描的 Android 项目根目录（绝对路径或相对路径）
+project_path: "."
+
+# 布局文件搜索路径（相对于 project_path，支持 glob 模式）
+layout_paths:
+  - "app/src/main/res/layout*/*.xml"
+  - "**/src/main/res/layout*/*.xml"
+
+# 需要同步修改的其他文件路径
+source_paths:
+  - "app/src/main/java"
+  - "app/src/main/kotlin"
+  - "app/src/main/res/navigation"
+  - "app/src/main/res/menu"
+  - "app/src/main/res/values"
+
+# ID 命名规则配置
+naming:
+  # 格式: {page}_{component_abbr}_{description}
+  separator: "_"
+  # 最少段数
+  min_parts: 3
+  # 是否强制全小写
+  lowercase_only: true
+
+# 页面名提取规则：从布局文件名中提取页面名时去掉的前缀
+layout_prefixes:
+  - "activity_"
+  - "fragment_"
+  - "dialog_"
+  - "layout_"
+  - "view_"
+  # item 布局保留 item_ 前缀
+
+# 白名单：这些 ID 不会被标记为不合规（支持正则表达式）
+whitelist_ids:
+  # 系统保留 ID
+  - "content"
+  - "nav_host_fragment"
+  - "action_bar"
+
+# 白名单文件：这些布局文件中的 ID 不会被检查
+whitelist_files:
+  # 常见的系统/第三方布局
+  - "design_*.xml"
+  - "support_*.xml"
+
+# 自定义组件缩写映射（会与内置映射合并，自定义优先）
+custom_component_abbr: {}
+  # Example:
+  #   CustomView: "cv_custom"
+  #   MapView: "mv"
+
+# 输出配置
+output:
+  # 报告输出目录
+  report_dir: "."
+  # 报告文件名
+  report_filename: "id_report.csv"
+  # 修改日志文件名
+  changelog_filename: "id_changes.log"
