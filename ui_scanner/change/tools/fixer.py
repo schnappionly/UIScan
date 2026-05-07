@@ -24,7 +24,6 @@ import csv
 import os
 import re
 import sys
-import shutil
 from datetime import datetime
 from typing import Optional
 
@@ -40,7 +39,6 @@ from utils import (
     print_info,
     read_file,
     write_file,
-    backup_file,
     find_files,
 )
 
@@ -53,13 +51,11 @@ class IDFixer:
         project_dir: str,
         id_mappings: dict[str, str],
         dry_run: bool = True,
-        backup: bool = True,
         only_xml: bool = False,
     ):
         self.project_dir = os.path.abspath(project_dir)
         self.id_mappings = id_mappings  # {old_id: new_id}
         self.dry_run = dry_run
-        self.backup = backup
         self.only_xml = only_xml
 
         # 自动发现所有模块的 src/main 目录
@@ -73,17 +69,77 @@ class IDFixer:
             if old_camel != new_camel:
                 self.camel_mappings[old_camel] = new_camel
 
-        # 统计
+        # 预编译：一次性构建 Kotlin/Java 替换所需的全部正则和查找表
+        self._compile_kt_java_patterns()
+
+        # 统计（含幂等计数）
         self.stats = {
             "files_scanned": 0,
             "files_modified": 0,
+            "files_skipped": 0,
             "replacements": 0,
-            "backups_created": 0,
+            "already_replaced": 0,
             "errors": 0,
         }
 
         # 修改日志
         self.changes = []
+
+    def _compile_kt_java_patterns(self):
+        """预编译 Java 文件替换所需的全部正则，避免逐文件重复编译。
+
+        同时构建幂等检测所需的 new_id 查找表，用于重复执行时快速跳过已替换的文件。
+        """
+        if not self.id_mappings:
+            self._kj_rid_re = None
+            self._kj_binding_re = None
+            self._kj_synthetic_re = None
+            self._kj_rid_map = {}
+            self._kj_binding_map = {}
+            self._kj_id_to_new = {}
+            self._kj_new_ids = set()
+            self._kj_new_id_set_re = None
+            self._kj_new_camel_set = set()
+            self._kj_new_camel_re = None
+            return
+
+        # --- R.id.xxx 匹配 ---
+        sorted_ids = sorted(self.id_mappings.keys(), key=len, reverse=True)
+        rid_alts = '|'.join(re.escape(oid) for oid in sorted_ids)
+        self._kj_rid_re = re.compile(rf'R\.id\.({rid_alts})\b')
+        self._kj_rid_map = dict(self.id_mappings)
+
+        # --- 幂等检测: 快速判断文件中的 new_id 是否已全部替换完毕 ---
+        self._kj_new_ids = set(self.id_mappings.values())
+        new_ids_sorted = sorted(self._kj_new_ids, key=len, reverse=True)
+        new_alts = '|'.join(re.escape(nid) for nid in new_ids_sorted)
+        self._kj_new_id_set_re = re.compile(rf'R\.id\.({new_alts})\b')
+
+        # --- binding.xxxCamel 匹配 ---
+        if self.camel_mappings:
+            sorted_camel = sorted(self.camel_mappings.keys(), key=len, reverse=True)
+            camel_alts = '|'.join(re.escape(c) for c in sorted_camel)
+            self._kj_binding_re = re.compile(rf'\bbinding\.\s*({camel_alts})\b')
+            self._kj_new_camel_set = set(self.camel_mappings.values())
+            new_camel_sorted = sorted(self._kj_new_camel_set, key=len, reverse=True)
+            new_camel_alts = '|'.join(re.escape(c) for c in new_camel_sorted)
+            self._kj_new_camel_re = re.compile(rf'\bbinding\.\s*({new_camel_alts})\b')
+        else:
+            self._kj_binding_re = None
+            self._kj_new_camel_set = set()
+            self._kj_new_camel_re = None
+        self._kj_binding_map = dict(self.camel_mappings)
+
+        # --- synthetic import 匹配 ---
+        id_alts_dot = '|'.join(re.escape(oid) for oid in sorted_ids)
+        self._kj_synthetic_re = re.compile(
+            rf'import\s+kotlinx\.android\.synthetic\.main\.[\w.]+\.({id_alts_dot})\b'
+        )
+        self._kj_id_to_new = dict(self.id_mappings)
+
+        # --- 幂等检测: 构建快速子串探测集合（用于 early-return） ---
+        self._kj_old_ids_set = set(self.id_mappings.keys())
+        self._kj_old_camels_set = set(self.camel_mappings.keys()) if self.camel_mappings else set()
 
     def log_change(self, filepath: str, old: str, new: str, context: str = ""):
         self.changes.append({
@@ -149,9 +205,6 @@ class IDFixer:
 
         if content != original:
             if not self.dry_run:
-                if self.backup:
-                    backup_file(filepath)
-                    self.stats["backups_created"] += 1
                 write_file(filepath, content)
             self.stats["files_modified"] += 1
             self.stats["replacements"] += count
@@ -163,7 +216,14 @@ class IDFixer:
     # ================================================================
 
     def fix_kotlin_java_file(self, filepath: str) -> int:
-        """修复 Kotlin/Java 文件中的 ID 引用。返回替换次数。"""
+        """修复 Java 文件中的 ID 引用。返回替换次数。
+
+        性能优化 + 幂等安全：
+        1. 预编译正则：所有 old_id 合并为一个大 alternation，一次扫描。
+        2. 回调查表替换：O(1) 查 dict，避免反复扫描。
+        3. 快速子串探测早退：不含任何 old_id 的文件直接跳过。
+        4. 幂等检测：文件只含 new_id 不含 old_id → 已替换完毕，标记跳过。
+        """
         try:
             content = read_file(filepath)
         except Exception as e:
@@ -171,73 +231,102 @@ class IDFixer:
             self.stats["errors"] += 1
             return 0
 
+        if not self._kj_rid_re:
+            return 0
+
+        # ── 第一层早退：不含任何 old_id 子串 → 完全无关文件 ──
+        _has_old = False
+        for old_id in self._kj_old_ids_set:
+            if old_id in content:
+                _has_old = True
+                break
+        if not _has_old:
+            # 检查是否含有 old camel（binding 场景）
+            for old_camel in self._kj_old_camels_set:
+                if old_camel in content:
+                    _has_old = True
+                    break
+        if not _has_old:
+            return 0
+
+        # ── 幂等检测：不含 old_id 但含 new_id → 已替换完毕 ──
+        _has_old_rid = self._kj_rid_re.search(content) is not None
+        _has_old_binding = (self._kj_binding_re is not None
+                           and self._kj_binding_re.search(content) is not None)
+        _has_old_synthetic = (self._kj_synthetic_re is not None
+                             and self._kj_synthetic_re.search(content) is not None)
+
+        if not _has_old_rid and not _has_old_binding and not _has_old_synthetic:
+            # 全部是 new_id，没有 old_id 残留 → 文件已替换，快速跳过
+            self.stats["files_skipped"] += 1
+            self.stats["already_replaced"] += 1
+            rel = os.path.relpath(filepath, self.project_dir)
+            cprint(f"    {rel}: 已替换，跳过", Colors.CYAN)
+            return 0
+
         original = content
         count = 0
+        _local_log = self.changes.append
 
-        for old_id, new_id in self.id_mappings.items():
-            old_camel = snake_to_camel(old_id)
-            new_camel = snake_to_camel(new_id)
+        # ── 1. R.id.xxx 一次性替换 ──
+        if _has_old_rid:
+            def _replace_rid(m):
+                nonlocal count
+                old = m.group(1)
+                new = self._kj_rid_map[old]
+                count += 1
+                _local_log({
+                    "file": os.path.relpath(filepath, self.project_dir),
+                    "old": f"R.id.{old}",
+                    "new": f"R.id.{new}",
+                    "context": "R.id 引用",
+                })
+                return f'R.id.{new}'
 
-            # 1. R.id.xxx 引用（最常见）
-            pattern = rf'R\.id\.{re.escape(old_id)}\b'
-            replacement = f'R.id.{new_id}'
-            new_content = re.sub(pattern, replacement, content)
-            if new_content != content:
-                matches = len(re.findall(pattern, content))
-                count += matches
-                self.log_change(filepath, f"R.id.{old_id}", f"R.id.{new_id}", "R.id 引用")
-                content = new_content
+            content = self._kj_rid_re.sub(_replace_rid, content)
 
-            # 2. findViewById<R.type.old> 或 findViewById(R.id.old)
-            pattern = rf'findViewById[<(]\s*R\.id\.{re.escape(old_id)}\s*[>)]'
-            replacement = f'findViewById(R.id.{new_id})'
-            new_content = re.sub(pattern, replacement, content)
-            if new_content != content:
-                matches = len(re.findall(pattern, content))
-                count += matches
-                self.log_change(filepath, "findViewById", f"findViewById(R.id.{new_id})", "findViewById")
-                content = new_content
+        # ── 2. binding.xxxCamel 一次性替换 ──
+        if _has_old_binding:
+            def _replace_binding(m):
+                nonlocal count
+                old_camel = m.group(1)
+                new_camel = self._kj_binding_map[old_camel]
+                count += 1
+                _local_log({
+                    "file": os.path.relpath(filepath, self.project_dir),
+                    "old": f"binding.{old_camel}",
+                    "new": f"binding.{new_camel}",
+                    "context": "ViewBinding",
+                })
+                return f'binding.{new_camel}'
 
-            # 3. ViewBinding 引用: binding.oldCamel -> binding.newCamel
-            if old_camel != new_camel:
-                pattern = rf'\b{re.escape(old_camel)}\b'
-                # 只在看起来像 binding.field 的上下文中替换
-                new_content = re.sub(
-                    rf'(\bbinding\.\s*){re.escape(old_camel)}\b',
-                    rf'\1{new_camel}',
-                    content,
-                )
-                if new_content != content:
-                    matches = len(re.findall(rf'(\bbinding\.\s*){re.escape(old_camel)}\b', content))
-                    count += matches
-                    self.log_change(filepath, f"binding.{old_camel}", f"binding.{new_camel}", "ViewBinding")
-                    content = new_content
+            content = self._kj_binding_re.sub(_replace_binding, content)
 
-                # 4. synthetic imports: import kotlinx.android.synthetic.main.xxx.old
-                pattern = rf'import\s+kotlinx\.android\.synthetic\.main\.[\w.]+\.{re.escape(old_id)}\b'
-                replacement_content = content  # 需要整行替换
-                lines = content.split("\n")
-                new_lines = []
-                for line in lines:
-                    if re.search(pattern, line):
-                        new_line = line.replace(old_id, new_id)
-                        if new_line != line:
-                            count += 1
-                            self.log_change(filepath, line.strip(), new_line.strip(), "synthetic import")
-                        new_lines.append(new_line)
-                    else:
-                        new_lines.append(line)
+        # ── 3. synthetic import 行级替换 ──
+        if _has_old_synthetic:
+            lines = content.split("\n")
+            new_lines = None
+            for i, line in enumerate(lines):
+                m = self._kj_synthetic_re.search(line)
+                if m:
+                    if new_lines is None:
+                        new_lines = list(lines)
+                    old_id = m.group(1)
+                    new_id = self._kj_id_to_new[old_id]
+                    new_line = line.replace(old_id, new_id)
+                    count += 1
+                    _local_log({
+                        "file": os.path.relpath(filepath, self.project_dir),
+                        "old": line.strip(),
+                        "new": new_line.strip(),
+                        "context": "synthetic import",
+                    })
+                    new_lines[i] = new_line
+            if new_lines is not None:
                 content = "\n".join(new_lines)
-
-            # 5. @IdRes 注解的参数
-            pattern = rf'@IdRes[^)]*?{re.escape(old_id)}\b'
-            new_content = content  # rare, handled by R.id pattern above
 
         if content != original:
             if not self.dry_run:
-                if self.backup:
-                    backup_file(filepath)
-                    self.stats["backups_created"] += 1
                 write_file(filepath, content)
             self.stats["files_modified"] += 1
             self.stats["replacements"] += count
@@ -289,9 +378,6 @@ class IDFixer:
 
         if content != original:
             if not self.dry_run:
-                if self.backup:
-                    backup_file(filepath)
-                    self.stats["backups_created"] += 1
                 write_file(filepath, content)
             self.stats["files_modified"] += 1
             self.stats["replacements"] += count
@@ -330,7 +416,7 @@ class IDFixer:
         # 扫描并修复文件
         self._fix_layout_files()
         if not self.only_xml:
-            self._fix_kotlin_java_files()
+            self._fix_java_files()
             self._fix_navigation_files()
             self._fix_menu_files()
             self._fix_values_files()
@@ -385,20 +471,19 @@ class IDFixer:
                     rel = os.path.relpath(fp, self.project_dir)
                     cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
-    def _fix_kotlin_java_files(self):
-        """修复所有模块中的 Kotlin/Java 源文件。"""
-        cprint("\n  [2/5] 扫描 Kotlin/Java 源文件...", Colors.BOLD)
+    def _fix_java_files(self):
+        """修复所有模块中的 Java 源文件。"""
+        cprint("\n  [2/5] 扫描 Java 源文件...", Colors.BOLD)
         for src_main in self._source_roots:
-            for src_dir in ["java", "kotlin"]:
-                base = os.path.join(src_main, src_dir)
-                if not os.path.isdir(base):
-                    continue
-                for fp in find_files(base, extensions=[".kt", ".java", ".kts"]):
-                    self.stats["files_scanned"] += 1
-                    count = self.fix_kotlin_java_file(fp)
-                    if count > 0:
-                        rel = os.path.relpath(fp, self.project_dir)
-                        cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
+            base = os.path.join(src_main, "java")
+            if not os.path.isdir(base):
+                continue
+            for fp in find_files(base, extensions=[".java"]):
+                self.stats["files_scanned"] += 1
+                count = self.fix_kotlin_java_file(fp)
+                if count > 0:
+                    rel = os.path.relpath(fp, self.project_dir)
+                    cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
 
     def _fix_navigation_files(self):
         """修复所有模块中的 Navigation XML。"""
@@ -449,9 +534,8 @@ class IDFixer:
                             self.log_change(fp, old_id, new_id, "values XML")
                     if content != original:
                         if not self.dry_run:
-                            if self.backup:
-                                backup_file(fp)
-                            write_file(fp, content)
+                            if not self.dry_run:
+                                write_file(fp, content)
                         self.stats["files_modified"] += 1
                         self.stats["replacements"] += count
                         rel = os.path.relpath(fp, self.project_dir)
@@ -466,17 +550,19 @@ class IDFixer:
         cprint(f"{'='*70}", Colors.BLUE)
         cprint(f"  扫描文件数:     {self.stats['files_scanned']}", Colors.CYAN)
         cprint(f"  修改文件数:     {self.stats['files_modified']}", Colors.GREEN)
+        cprint(f"  已替换跳过:     {self.stats['files_skipped']}", Colors.CYAN)
         cprint(f"  替换总数:       {self.stats['replacements']}", Colors.GREEN)
-        cprint(f"  备份数:         {self.stats['backups_created']}", Colors.YELLOW)
+        cprint(f"  已替换 ID 数:   {self.stats['already_replaced']}", Colors.CYAN)
         cprint(f"  错误数:         {self.stats['errors']}", Colors.RED)
+
+        if self.stats['files_skipped'] > 0:
+            cprint(f"\n  提示: {self.stats['files_skipped']} 个文件已替换完毕，本次跳过", Colors.CYAN)
 
         if self.dry_run:
             cprint(f"\n  这是预览模式，未实际修改任何文件", Colors.YELLOW)
             cprint(f"  要执行实际修改，去掉 --dry-run 参数", Colors.YELLOW)
         else:
-            cprint(f"\n  修改已完成！所有原文件已备份为 .bak", Colors.GREEN)
-            rollback_cmd = 'find . -name "*.bak" -exec bash -c \'mv "$0" "${0%.bak}"\' {} \\;'
-            cprint(f"  如需回滚：{rollback_cmd}", Colors.CYAN)
+            cprint(f"\n  修改已完成！", Colors.GREEN)
         cprint(f"{'='*70}\n", Colors.BLUE)
 
     def _save_changelog(self):
@@ -557,11 +643,6 @@ def main():
         help="实际执行修改（关闭 dry-run）",
     )
     parser.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="不创建备份文件",
-    )
-    parser.add_argument(
         "--only-xml",
         action="store_true",
         help="只修改 XML 布局文件，不修改 Kotlin/Java 代码",
@@ -631,7 +712,6 @@ def main():
         project_dir=args.project_dir,
         id_mappings=id_mappings,
         dry_run=dry_run,
-        backup=not args.no_backup,
         only_xml=args.only_xml,
     )
     fixer.fix_all()
