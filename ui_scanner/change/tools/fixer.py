@@ -54,12 +54,22 @@ class IDFixer:
         only_xml: bool = False,
     ):
         self.project_dir = os.path.abspath(project_dir)
-        self.id_mappings = id_mappings  # {old_id: new_id}
         self.dry_run = dry_run
         self.only_xml = only_xml
 
         # 自动发现所有模块的 src/main 目录
         self._source_roots = self._discover_source_roots()
+
+        # 加载白名单，在构建映射前剔除白名单中的 ID
+        self.whitelist = self._load_whitelist()
+        if self.whitelist:
+            before = len(id_mappings)
+            id_mappings = {k: v for k, v in id_mappings.items() if k not in self.whitelist}
+            skipped = before - len(id_mappings)
+            if skipped > 0:
+                print_info(f"白名单过滤: 跳过 {skipped} 个 ID")
+
+        self.id_mappings = id_mappings  # {old_id: new_id}
 
         # 同时维护驼峰形式的映射（用于 ViewBinding）
         self.camel_mappings = {}
@@ -85,6 +95,22 @@ class IDFixer:
 
         # 修改日志
         self.changes = []
+
+    def _load_whitelist(self) -> set[str]:
+        """加载白名单文件。白名单中的 ID 不做替换处理。"""
+        whitelist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whiteList.txt")
+        if not os.path.isfile(whitelist_path):
+            return set()
+        ids = set()
+        try:
+            with open(whitelist_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        ids.add(line)
+        except Exception as e:
+            print_warning(f"白名单文件读取失败: {e}")
+        return ids
 
     def _compile_xml_patterns(self):
         """预编译 XML 文件替换所需的全部正则，与 Java 同理。"""
@@ -471,7 +497,6 @@ class IDFixer:
             self._fix_java_files()
             self._fix_navigation_files()
             self._fix_menu_files()
-            self._fix_values_files()
 
         # 打印结果
         self._print_summary()
@@ -568,36 +593,6 @@ class IDFixer:
                 if count > 0:
                     rel = os.path.relpath(fp, self.project_dir)
                     cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
-
-    def _fix_values_files(self):
-        """修复所有模块中的 values/ids.xml 等文件。"""
-        cprint("\n  [5/5] 扫描 values XML...", Colors.BOLD)
-        for src_main in self._source_roots:
-            values_dir = os.path.join(src_main, "res", "values")
-            if not os.path.isdir(values_dir):
-                continue
-            for fp in find_files(values_dir, extensions=[".xml"]):
-                self.stats["files_scanned"] += 1
-                try:
-                    content = read_file(fp)
-                    original = content
-                    count = 0
-                    for old_id, new_id in self.id_mappings.items():
-                        pattern = rf'name\s*=\s*"{re.escape(old_id)}"'
-                        if re.search(pattern, content):
-                            content = re.sub(pattern, f'name="{new_id}"', content)
-                            count += 1
-                            self.log_change(fp, old_id, new_id, "values XML")
-                    if content != original:
-                        if not self.dry_run:
-                            if not self.dry_run:
-                                write_file(fp, content)
-                        self.stats["files_modified"] += 1
-                        self.stats["replacements"] += count
-                        rel = os.path.relpath(fp, self.project_dir)
-                        cprint(f"    {rel}: {count} 处替换", Colors.GREEN)
-                except Exception:
-                    pass
 
     def _print_summary(self):
         """打印修复摘要。"""
