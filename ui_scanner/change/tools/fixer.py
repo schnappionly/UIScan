@@ -61,10 +61,11 @@ class IDFixer:
         self._source_roots = self._discover_source_roots()
 
         # 加载白名单，在构建映射前剔除白名单中的 ID
-        self.whitelist = self._load_whitelist()
-        if self.whitelist:
+        self._wl_exact, self._wl_prefixes = self._load_whitelist()
+        if self._wl_exact or self._wl_prefixes:
             before = len(id_mappings)
-            id_mappings = {k: v for k, v in id_mappings.items() if k not in self.whitelist}
+            id_mappings = {k: v for k, v in id_mappings.items()
+                           if not self._is_whitelisted(k)}
             skipped = before - len(id_mappings)
             if skipped > 0:
                 print_info(f"白名单过滤: 跳过 {skipped} 个 ID")
@@ -96,21 +97,39 @@ class IDFixer:
         # 修改日志
         self.changes = []
 
-    def _load_whitelist(self) -> set[str]:
-        """加载白名单文件。白名单中的 ID 不做替换处理。"""
+    def _load_whitelist(self) -> tuple[set[str], list[str]]:
+        """加载白名单文件。返回 (精确匹配集合, 前缀匹配列表)。
+
+        以 _ 结尾的条目视为前缀匹配，如 hwsubheader_ 匹配所有 hwsubheader_ 开头的 ID。
+        """
         whitelist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whiteList.txt")
         if not os.path.isfile(whitelist_path):
-            return set()
-        ids = set()
+            return set(), []
+        exact = set()
+        prefixes = []
         try:
             with open(whitelist_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):
-                        ids.add(line)
+                        if line.endswith("_"):
+                            prefixes.append(line)
+                        else:
+                            exact.add(line)
         except Exception as e:
             print_warning(f"白名单文件读取失败: {e}")
-        return ids
+        if prefixes:
+            print_info(f"白名单前缀规则: {prefixes}")
+        return exact, prefixes
+
+    def _is_whitelisted(self, id_name: str) -> bool:
+        """判断 ID 是否命中白名单（精确或前缀）。"""
+        if id_name in self._wl_exact:
+            return True
+        for prefix in self._wl_prefixes:
+            if id_name.startswith(prefix):
+                return True
+        return False
 
     def _compile_xml_patterns(self):
         """预编译 XML 文件替换所需的全部正则，与 Java 同理。"""
